@@ -1,0 +1,96 @@
+defaults:
+  - _self_
+  # 🔥 引用上面创建的 metadrive_parking.yaml
+  - env: metadrive_parking
+  # 以下保持 DINO-WM 默认组件
+  - encoder: dino
+  - action_encoder: proprio
+  - proprio_encoder: proprio
+  - decoder: vqvae
+  - predictor: vit
+  # 移除 submitit (集群调度)，使用本地运行
+  # - override hydra/launcher: submitit_slurm
+
+# Checkpoints 和日志保存路径
+# 您可以修改为你喜欢的绝对路径
+ckpt_base_path: "/home/lcj/dino_wm/checkpoints_parking/${now:%Y-%m-%d}_${now:%H-%M-%S}/outputs"
+
+hydra:
+  run:
+    # 自动按日期/时间创建实验文件夹
+    dir: ${ckpt_base_path}
+  sweep:
+    dir: ${ckpt_base_path}
+    subdir: ${hydra.job.num}
+
+training:
+  seed: 42
+  epochs: 200            # 泊车数据较少，多跑些 Epoch
+
+  # 显存优化建议：
+  # 16GB 显存，224x224 图片，Batch Size 16 比较稳妥
+  # 如果显存不够，改小到 8；如果还有空余，尝试 24 或 32
+  batch_size: 8
+
+  save_every_x_epoch: 10
+
+  # 训练过程中可视化重建效果的频率 (Step)
+  reconstruct_every_x_batch: 500
+  num_reconstruct_samples: 4
+
+  # 学习率配置 (参考 PushT 任务)
+  encoder_lr: 1e-6       # DINO Encoder 几乎不微调或极小 LR
+  decoder_lr: 3e-4       # 解码器学习率
+  predictor_lr: 1e-4     # 核心预测器学习率 (Transformer)
+  action_encoder_lr: 1e-4
+
+# === 数据相关 ===
+img_size: 224
+
+# 🔥 Frameskip: 关键参数
+# 我们的数据是 10Hz (0.1s/步)。
+# 设为 5 代表模型预测 0.5s 后的未来。
+# 对于泊车这种慢速任务，5 是比较合理的（既能看到变化，又不会跨度太大）。
+frameskip: 5
+
+#action_dim: 2       # MetaDrive 只有 [steering, throttle]
+#proprio_dim: 3      # 你的 state 是 [speed, steering, 0.0]
+
+concat_dim: 1
+normalize_action: True
+
+# === 模型结构参数 ===
+# 动作嵌入维度 (MetaDrive 动作是 2维，投影到 256维)
+action_emb_dim: 256
+num_action_repeat: 1
+
+# 状态/本体感知嵌入维度 (MetaDrive 状态是 3维，投影到 256维)
+proprio_emb_dim: 256
+num_proprio_repeat: 1
+
+# 历史与预测长度
+# num_hist=3: 输入过去3帧 (t-2, t-1, t)
+# num_pred=1: 预测未来1帧 (t+1) -> 对应 frameskip 后的时刻
+num_hist: 3
+num_pred: 1
+
+has_predictor: True
+has_decoder: True
+
+model:
+  _target_: models.visual_world_model.VWorldModel
+  image_size: ${img_size}
+  num_hist: ${num_hist}
+  num_pred: ${num_pred}
+  # DINO Encoder 是否参与训练？
+  # False = 冻结参数 (标准 DINO-WM 做法，训练快，显存占用小)
+  # True = 微调参数 (如果有大量特定领域数据，可以开，但泊车任务建议先 False)
+  train_encoder: False
+  train_predictor: True
+  train_decoder: True
+
+debug: False
+
+# 暂时不配置 Planning，先只训练 World Model
+plan_settings:
+  plan_cfg_path: null

@@ -1,0 +1,28 @@
+name: metadrive_parking
+
+args: []
+kwargs:
+  with_velocity: true
+  with_target: true # DINO-WM 通常需要 target image
+
+dataset:
+  # 指向你刚才创建的函数
+  _target_: "datasets.metadrive_parking_dset.load_metadrive_parking_slice_train_val"
+
+  with_velocity: true
+  n_rollout: null # null 表示读取文件夹下所有文件
+  normalize_action: ${normalize_action}
+
+  # 🔥 修改为你实际保存数据集的路径
+  # 例如: "data/parking_dino_dataset_20250201_xxxxxx"
+  # 如果你设置了环境变量 DATASET_DIR，也可以保留 ${oc.env:DATASET_DIR}/...
+  data_path: "/home/lcj/metadrive/metadrive/examples/parking_dataset/parking_dataset_20260202_102510"
+
+  split_ratio: 0.9 # 90% 训练, 10% 验证
+
+  transform:
+    _target_: "datasets.img_transforms.default_transform"
+    img_size: ${img_size} # 应该在主配置里设为 224
+
+decoder_path: null
+num_workers: 4 # 读取 npz 不需要太多 worker，4-8 即可
