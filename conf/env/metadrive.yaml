@@ -1,7 +1,7 @@
 name: metadrive
 dataset:
   # 指向我们在 data_loader.py 里写的函数
-  _target_: data_loader.build_metadrive_dataset
+  _target_: data_loader_meta.build_metadrive_dataset
   # 【注意】修改为你的绝对路径
   data_path: "/home/lcj/metadrive/metadrive/examples/data/metadrive_video_20260127_132708"
 
