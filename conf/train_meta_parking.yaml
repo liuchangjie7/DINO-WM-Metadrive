@@ -13,7 +13,7 @@ defaults:
 
 # Checkpoints 和日志保存路径
 # 您可以修改为你喜欢的绝对路径
-ckpt_base_path: "/home/lcj/dino_wm/checkpoints_parking/${now:%Y-%m-%d}_${now:%H-%M-%S}/outputs"
+ckpt_base_path: "/root/autodl-tmp/checkpoints/checkpoints_parking/outputs/metadrive_park_1"
 
 hydra:
   run:
@@ -30,7 +30,7 @@ training:
   # 显存优化建议：
   # 16GB 显存，224x224 图片，Batch Size 16 比较稳妥
   # 如果显存不够，改小到 8；如果还有空余，尝试 24 或 32
-  batch_size: 8
+  batch_size: 24
 
   save_every_x_epoch: 10
 

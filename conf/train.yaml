@@ -9,7 +9,7 @@ defaults:
   - override hydra/launcher: submitit_slurm
 
 # base path to save model outputs. Checkpoints will be saved to ${ckpt_base_path}/outputs.
-ckpt_base_path: /home/lcj/dino_wm/checkpoints/outputs0125 # put absolute path here
+ckpt_base_path: /root/DINO-WM-Metadrive/checkpoints/outputs # put absolute path here
 
 hydra:
   run:

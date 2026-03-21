@@ -92,8 +92,11 @@ class PlanEvaluator:  # evaluator for planning
             metrics, and feedback from env
         """
         n_evals = actions.shape[0]
+        # 👇 Debug 1: 检查输入的 action_len
+        print(f"\n[Debug] 开始评估。n_evals: {n_evals}, 传入的 action_len: {action_len}")
         if action_len is None:
             action_len = np.full(n_evals, np.inf)
+            print("[Debug] action_len 为空，已填充为 inf")
         # rollout in wm
         trans_obs_0 = move_to_device(
             self.preprocessor.transform_obs(self.obs_0), self.device
@@ -113,8 +116,32 @@ class PlanEvaluator:  # evaluator for planning
             actions.cpu(), "b t (f d) -> b (t f) d", f=self.frameskip
         )
         exec_actions = self.preprocessor.denormalize_actions(exec_actions).numpy()
-        e_obses, e_states = self.env.rollout(self.seed, self.state_0, exec_actions)
+
+        # 👇 ====== 核心修复：历史回放与画面对齐 ====== 👇
+        if hasattr(self, "history_actions") and self.history_actions is not None:
+            # 如果有历史动作，就把它反归一化并和当前的假想动作拼起来
+            history_exec = rearrange(
+                self.history_actions.cpu(), "b t (f d) -> b (t f) d", f=self.frameskip
+            )
+            history_exec = self.preprocessor.denormalize_actions(history_exec).numpy()
+            full_exec_actions = np.concatenate([history_exec, exec_actions], axis=1)
+            hist_len = history_exec.shape[1]
+        else:
+            full_exec_actions = exec_actions
+            hist_len = 0
+
+        # 让环境从大爆炸起点开始，老老实实跑完“历史 + 未来”所有动作
+        e_obses, e_states = self.env.rollout(self.seed, self.state_0, full_exec_actions)
+        
+        # 跑完之后，就像剪辑视频一样，把历史部分的画面和状态“一刀切掉”！
+        # 这样剩下的部分就刚好和世界模型的起点完美重合了。
+        if hist_len > 0:
+            e_obses = slice_trajdict_with_t(e_obses, start_idx=hist_len)
+            e_states = e_states[:, hist_len:]
+            
         e_visuals = e_obses["visual"]
+        # 👆 ========================================= 👆
+        
         e_final_obs = self._get_trajdict_last(e_obses, action_len * self.frameskip + 1)
         e_final_state = self._get_traj_last(e_states, action_len * self.frameskip + 1)[
             :, 0
@@ -130,10 +157,12 @@ class PlanEvaluator:  # evaluator for planning
         # plot trajs
         if self.wm.decoder is not None:
             i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
-            i_visuals = self._mask_traj(
-                i_visuals, action_len + 1
-            )  # we have action_len + 1 states
+            # 👇 Debug 2: 看看 mask 之前和之后的形状
+            print(f"[Debug] Mask 前 i_visuals 形状: {i_visuals.shape}")
+            i_visuals = self._mask_traj(i_visuals, action_len + 1)
+            
             e_visuals = self.preprocessor.transform_obs_visual(e_visuals)
+            print(f"[Debug] Mask 前 e_visuals 形状: {e_visuals.shape}")
             e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
             self._plot_rollout_compare(
                 e_visuals=e_visuals,
@@ -210,10 +239,17 @@ class PlanEvaluator:  # evaluator for planning
         correction = 0.3  # to distinguish env visuals and imagined visuals
 
         if save_video:
+            # 创建一个 debug 目录存放图片
+            debug_img_dir = f"debug_frames_{filename}"
+            os.makedirs(debug_img_dir, exist_ok=True)
+
             for idx in range(e_visuals.shape[0]):
                 success_tag = "success" if successes[idx] else "failure"
                 video_name = f"{filename}_{idx}_{success_tag}.mp4"
                 video_writer = imageio.get_writer(video_name, format='FFMPEG', fps=10, macro_block_size=None)
+
+                print(f"[Debug] 正在为样本 {idx} 写入视频，预期总帧数: {e_visuals.shape[1]}")
+
                 for i in range(e_visuals.shape[1]):
                     e_obs = e_visuals[idx, i, ...].cpu()
                     i_obs = i_visuals[idx, i, ...].cpu()
@@ -225,9 +261,14 @@ class PlanEvaluator:  # evaluator for planning
                     frame_np = rearrange(frame_tensor, "c h w -> h w c").detach().numpy()
                     frame_u8 = (((np.clip(frame_np, -1, 1) + 1.0) / 2.0) * 255.0).astype(np.uint8)
                     
+                    # 👇 Debug 3: 同时保存为图片文件
+                    if idx == 0: # 只存第一个样本的 debug 图，防止磁盘爆满
+                        img_path = os.path.join(debug_img_dir, f"sample_{idx}_frame_{i:03d}.jpg")
+                        imageio.imwrite(img_path, frame_u8)
                     
                     video_writer.append_data(frame_u8)
                 
+                print(f"[Debug] 样本 {idx} 视频写入完成并关闭。")
                 video_writer.close()
 
         # pad i_visuals or subsample e_visuals

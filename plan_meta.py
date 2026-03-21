@@ -221,8 +221,9 @@ class MetaDriveDinoWrapper(gym.Wrapper):
                 draw_target_vehicle_trajectory=False,
                 draw_history=False
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Render Error: {e}")
+            # pass
 
         if hasattr(img, 'get'):
             img = img.get()

@@ -195,7 +195,7 @@ class Trainer:
         return ckpt_path, model_name, model_epoch
 
     def load_ckpt(self, filename="model_latest.pth"):
-        ckpt = torch.load(filename)
+        ckpt = torch.load(filename, weights_only=False)
         for k, v in ckpt.items():
             self.__dict__[k] = v
         not_in_ckpt = set(self._keys_to_save) - set(ckpt.keys())
@@ -275,11 +275,11 @@ class Trainer:
                     decoder_path = os.path.join(
                         self.base_path, self.cfg.env.decoder_path
                     )
-                    ckpt = torch.load(decoder_path)
+                    ckpt = torch.load(decoder_path, weights_only=False)
                     if isinstance(ckpt, dict):
                         self.decoder = ckpt["decoder"]
                     else:
-                        self.decoder = torch.load(decoder_path)
+                        self.decoder = torch.load(decoder_path, weights_only=False)
                     log.info(f"Loaded decoder from {decoder_path}")
                 else:
                     self.decoder = hydra.utils.instantiate(

@@ -3,8 +3,8 @@ dataset:
   # 指向我们在 data_loader.py 里写的函数
   _target_: data_loader_meta.build_metadrive_dataset
   # 【注意】修改为你的绝对路径
-  data_path: "/home/lcj/metadrive/metadrive/examples/data/metadrive_video_20260127_132708"
+  data_path: "/root/DINO-WM-Metadrive/data/metadrive_video_20260127_132708"
 
 # DataLoader 的工作线程数，本地跑建议设小一点，防止卡死
-num_workers: 4
+num_workers: 12
 decoder_path: null
