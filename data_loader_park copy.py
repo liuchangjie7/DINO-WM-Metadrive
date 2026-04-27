@@ -5,9 +5,8 @@ import numpy as np
 from torch.utils.data import Dataset
 
 # ============================================================
-# 1. 训练/验证专用数据集 (按需读取 On-the-fly)
+# 1. 训练/验证专用数据集 (滑动窗口切片模式 + 内存加速)
 # ============================================================
-# 只替换 ParkingDataset 这个类，其他保留原样
 class ParkingDataset(Dataset):
     def __init__(self, files, num_hist, num_pred, frameskip=1):
         self.files = files
@@ -21,27 +20,27 @@ class ParkingDataset(Dataset):
         self.action_dim = self.raw_action_dim * self.frameskip
 
         self.indices = []
+        self.cache = {}  # 🚀 新增：内存缓存字典
         
-        # 🚀 新增：带容量限制的 FIFO 缓存机制
-        self.file_cache = {}
-        # 假设 1 个文件解压后 15MB，200 个就是 3GB。
-        # 如果你的 num_workers 是 8，总内存占用大约 24GB，非常安全！
-        self.max_cache_size = 200 
-        
-        print(f"正在扫描 {len(self.files)} 个文件以构建索引...")
+        print(f"正在将 {len(self.files)} 个文件加载到内存中，请稍等 (可极大加速训练)...")
         for file_idx, fpath in enumerate(self.files):
             try:
-                # 仅读取形状信息，不加载实体数据
                 with np.load(fpath) as data:
                     L = data['action'].shape[0]
                     if L > self.seq_len:
+                        # 一次性读入内存
+                        self.cache[file_idx] = {
+                            'image': data['image'],
+                            'action': data['action'],
+                            'state': data['state']
+                        }
                         for t in range(0, L - self.seq_len + 1):
                             self.indices.append((file_idx, t))
             except Exception as e:
-                pass # 忽略损坏文件
+                print(f"Skipping broken file {fpath}: {e}")
 
         np.random.shuffle(self.indices)
-        print(f"[Parking Dataset] 成功构建 {len(self.indices)} 个有效切片索引.")
+        print(f"[Parking Dataset] 成功加载 {len(self.indices)} 个有效切片到内存中.")
         self.compute_stats()
 
     def compute_stats(self):
@@ -49,16 +48,16 @@ class ParkingDataset(Dataset):
         all_acts = []
         all_states = []
 
-        sample_indices = np.random.choice(len(self.files), min(100, len(self.files)), replace=False)
-        for idx in sample_indices:
-            fpath = self.files[idx]
-            with np.load(fpath) as data:
-                all_acts.append(data['action'])
-                all_states.append(data['state'])
+        # 直接从缓存中计算统计量
+        sample_keys = list(self.cache.keys())[:min(100, len(self.cache))]
+        for k in sample_keys:
+            all_acts.append(self.cache[k]['action'])
+            all_states.append(self.cache[k]['state'])
 
         if len(all_acts) > 0:
             all_acts = np.concatenate(all_acts, axis=0)
             all_states = np.concatenate(all_states, axis=0)
+
             self.raw_action_mean = torch.from_numpy(all_acts.mean(axis=0)).float()
             self.raw_action_std = torch.from_numpy(all_acts.std(axis=0)).float() + 1e-6
             self.action_mean = self.raw_action_mean.repeat(self.frameskip)
@@ -82,39 +81,27 @@ class ParkingDataset(Dataset):
     def __getitem__(self, idx):
         file_idx, start_t = self.indices[idx]
         end_t = start_t + self.seq_len
-        fpath = self.files[file_idx]
 
-        # 🚀 核心优化：如果文件不在缓存中，才去解压读取
-        if fpath not in self.file_cache:
-            # 如果缓存池满了，弹出最旧的那个文件 (FIFO 原理)
-            if len(self.file_cache) >= self.max_cache_size:
-                self.file_cache.pop(next(iter(self.file_cache)))
-            
-            with np.load(fpath) as data:
-                self.file_cache[fpath] = {
-                    'image': data['image'], # 此刻完成解压并常驻当前 worker 内存
-                    'action': data['action'],
-                    'state': data['state']
-                }
-        
-        # 命中缓存，直接极速切片！
-        data = self.file_cache[fpath]
+        # 🚀 从内存极速读取
+        data = self.cache[file_idx]
         imgs = data['image'][start_t:end_t:self.frameskip]
         states = data['state'][start_t:end_t:self.frameskip]
         acts_raw = data['action'][start_t:end_t]
-
         acts = acts_raw.reshape(-1, self.frameskip * self.raw_action_dim)
 
+        # 🛠️ 修复 1：将图像映射到 [-1, 1]，解决画面全灰/发白问题！
         imgs = (torch.from_numpy(imgs).float() / 255.0) * 2.0 - 1.0
         imgs = imgs.permute(0, 3, 1, 2)
 
         acts = torch.from_numpy(acts).float()
+        # 🛠️ 修复 2：训练集补充缺失的动作归一化！
         acts = (acts - self.action_mean) / self.action_std
 
         states = torch.from_numpy(states).float()
         obs = {"visual": imgs, "proprio": states}
 
         return obs, acts, states
+
 
 # ============================================================
 # 2. 验证专用数据集 (全量轨迹模式，用于 Rollout)
@@ -142,8 +129,6 @@ class ParkingTrajectoryDataset(Dataset):
 
     def __getitem__(self, idx):
         fpath = self.files[idx]
-        
-        # 同样在这里按需读取
         with np.load(fpath) as data:
             imgs = data['image']
             acts = data['action']

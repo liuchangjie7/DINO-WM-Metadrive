@@ -70,8 +70,8 @@ class Attention(nn.Module):
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
         # apply causal mask
-        dots = dots.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
-
+        # dots = dots.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
+        dots = dots.masked_fill(self.bias[:, :, :T, :T].to(dots.device) == 0, float("-inf"))
         attn = self.attend(dots)
         attn = self.dropout(attn)
 

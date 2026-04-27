@@ -93,10 +93,10 @@ class PlanEvaluator:  # evaluator for planning
         """
         n_evals = actions.shape[0]
         # 👇 Debug 1: 检查输入的 action_len
-        print(f"\n[Debug] 开始评估。n_evals: {n_evals}, 传入的 action_len: {action_len}")
+        # print(f"\n[Debug] 开始评估。n_evals: {n_evals}, 传入的 action_len: {action_len}")
         if action_len is None:
             action_len = np.full(n_evals, np.inf)
-            print("[Debug] action_len 为空，已填充为 inf")
+            # print("[Debug] action_len 为空，已填充为 inf")
         # rollout in wm
         trans_obs_0 = move_to_device(
             self.preprocessor.transform_obs(self.obs_0), self.device
@@ -158,11 +158,11 @@ class PlanEvaluator:  # evaluator for planning
         if self.wm.decoder is not None:
             i_visuals = self.wm.decode_obs(i_z_obses)[0]["visual"]
             # 👇 Debug 2: 看看 mask 之前和之后的形状
-            print(f"[Debug] Mask 前 i_visuals 形状: {i_visuals.shape}")
+            # print(f"[Debug] Mask 前 i_visuals 形状: {i_visuals.shape}")
             i_visuals = self._mask_traj(i_visuals, action_len + 1)
             
             e_visuals = self.preprocessor.transform_obs_visual(e_visuals)
-            print(f"[Debug] Mask 前 e_visuals 形状: {e_visuals.shape}")
+            # print(f"[Debug] Mask 前 e_visuals 形状: {e_visuals.shape}")
             e_visuals = self._mask_traj(e_visuals, action_len * self.frameskip + 1)
             self._plot_rollout_compare(
                 e_visuals=e_visuals,
@@ -193,7 +193,7 @@ class PlanEvaluator:  # evaluator for planning
         }
 
         print("Success rate: ", logs['success_rate'])
-        print(eval_results)
+        # print(eval_results)
 
         visual_dists = np.linalg.norm(e_obs["visual"] - self.obs_g["visual"], axis=1)
         mean_visual_dist = np.mean(visual_dists)

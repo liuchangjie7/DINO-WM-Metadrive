@@ -187,19 +187,13 @@ class ParkingPilot:
 # 3. 环境 Wrapper适配 (多智能体车位 + 专家策略起步)
 # ========================================================
 class ParkingDinoWrapper(gym.Wrapper):
-    def __init__(self, env, frameskip=1, action_mean=None, action_std=None): # <--- 新增
+    def __init__(self, env, frameskip=1, action_mean=None, action_std=None):
         super().__init__(env)
-        self.proprio_dim = 3
-        self.current_seed = None
-        self.steps_to_goal = 25
-        self.start_offset_range = [20, 80]  
         self.frameskip = frameskip
-        self.static_vehicles = []
+        self.static_vehicles = [] 
         self.ego = None
         self.agent_id = None
-        self.current_action = [0.0, 0.0] 
-        
-        # ⚠️ 保存动作的均值和方差，用于反归一化
+        self.current_action = [0.0, 0.0]
         self.action_mean = action_mean if action_mean is not None else np.zeros(frameskip * 2)
         self.action_std = action_std if action_std is not None else np.ones(frameskip * 2)
 
@@ -211,211 +205,200 @@ class ParkingDinoWrapper(gym.Wrapper):
                 self.steps_to_goal = int(env_info['steps_to_goal'])
         return "OK"
 
+    def get_obs_at_pose(self, pose_xyh):
+        """生成一张车辆位于特定位置 (面包屑) 的鸟瞰图"""
+        old_pos = self.ego.position
+        old_heading = self.ego.heading_theta
+        old_vel = self.ego.velocity
+        
+        # 瞬移到面包屑位置
+        self.ego.set_position(pose_xyh[:2])
+        self.ego.set_heading_theta(pose_xyh[2])
+        self.ego.set_velocity([0, 0])
+        
+        obs = self._get_dino_obs()
+        
+        # 瞬移回原位
+        self.ego.set_position(old_pos)
+        self.ego.set_heading_theta(old_heading)
+        self.ego.set_velocity(old_vel)
+        return obs
+    
     def _setup_scene(self, seed):
-        """基于 seed 的确定性场景初始化"""
+        """
+        🚀 终极修复方案：严格清理，全局引用，确保周车稳定。
+        """
         rng = np.random.RandomState(seed)
         
-        # ⚠️ 关键修复：必须在 env.reset() 之前清理上一局手动生成的车辆！
-        if self.static_vehicles and hasattr(self.env, "engine") and self.env.engine is not None:
-            for sv in self.static_vehicles:
-                try:
-                    self.env.engine.clear_objects([sv.id])
-                except:
-                    pass
-        self.static_vehicles = []
+        # 1. 彻底清理：在 reset 之前，按 ID 逐个清除手动生成的周车
+        if hasattr(self.env, "engine") and self.env.engine is not None:
+            if self.static_vehicles:
+                for sv in self.static_vehicles:
+                    try:
+                        self.env.engine.clear_objects([sv.id])
+                    except:
+                        pass
+        self.static_vehicles = [] # 重置引用列表
 
-        # 清理完之后，再安全地重置环境
-        try:
-            self.env.reset()
-        except TypeError:
-            self.env.reset()
-
+        # 2. 安全重置物理环境
+        self.env.reset()
         active_agents = self.env.agent_manager.active_agents
-        if not active_agents:
-            # 防御性判断，偶尔 reset 会失败
-            pass
-            
         self.agent_id = list(active_agents.keys())[0]
         self.ego = active_agents[self.agent_id]
 
+        # 3. 严格对齐数据集起步 (8.0~14.0米) [cite: 8, 25-27, 43]
         target_slot = rng.choice(PARKING_SLOTS)
-        spawn_mode = rng.choice(["right_side", "left_side"])
-        
-        if spawn_mode == "right_side":
-            start_x, start_y, start_h = 38.0, rng.uniform(0.0, 3.0), np.pi
+        target_id = target_slot["id"]
+        target_x = target_slot["pos"][0]
+
+        spawn_mode = ["right_side", "left_side"][rng.choice(2)]
+        if spawn_mode == "left_side":
+            start_x = target_x - rng.uniform(8.0, 14.0)
+            start_y = rng.uniform(0.0, 2.0)
+            start_h = 0.0 + rng.uniform(-0.25, 0.25)
         else:
-            start_x, start_y, start_h = 18.0, rng.uniform(0.0, 3.0), 0.0
+            start_x = target_x + rng.uniform(8.0, 14.0)
+            start_y = rng.uniform(0.0, 2.0)
+            start_h = np.pi + rng.uniform(-0.25, 0.25)
 
         self.ego.set_position([start_x, start_y])
         self.ego.set_heading_theta(start_h)
         self.ego.set_velocity([0, 0])
 
-        pilot = ParkingPilot()
-        pilot.set_target(target_slot, self.ego)
+        # 4. 生成周边车辆 (周车) - 严格对齐数据集逻辑 [cite: 51, 53]
+        available_slots = [s for s in PARKING_SLOTS if s["id"] != target_id]
+        num_static_cars = rng.randint(1, len(available_slots))
+        occupied_indices = rng.choice(len(available_slots), num_static_cars, replace=False)
+        occupied_slots = [available_slots[i] for i in occupied_indices]
 
-        for s in PARKING_SLOTS:
-            if s["id"] == target_slot["id"]: continue
+        for s in occupied_slots:
+            noise_x = rng.uniform(-0.2, 0.2)
+            noise_y = rng.uniform(-0.2, 0.2)
+            noise_h = rng.uniform(-0.1, 0.1)
+            spawn_pos = [s["pos"][0] + noise_x, s["pos"][1] + noise_y]
+            spawn_h = s["heading"] + noise_h
+            
+            # 使用全局导入的 SVehicle
             obs_car = self.env.engine.spawn_object(SVehicle, vehicle_config={
-                "spawn_position_heading": (s["pos"], s["heading"]),
+                "spawn_position_heading": (spawn_pos, spawn_h),
                 "random_color": False
             })
             self.static_vehicles.append(obs_car)
-            
-        start_offset = rng.randint(self.start_offset_range[0], self.start_offset_range[1])
-        return pilot, start_offset
+
+        pilot = ParkingPilot()
+        pilot.set_target(target_slot, self.ego)
+        return pilot, target_slot
 
     def sample_random_init_goal_states(self, seed=None):
-        start_seed_limit = self.env.config.get("start_seed", 0)
-        if seed is None:
-            seed = self.current_seed if self.current_seed is not None else start_seed_limit
-        if seed < start_seed_limit:
-            seed += start_seed_limit
+        pilot, target_slot = self._setup_scene(seed)
+        obs_hist_visual, obs_hist_proprio = [], []
+        # 收集 3 帧历史，让车动起来
+        for i in range(3):
+            obs = self._get_dino_obs()
+            obs_hist_visual.append(obs['visual'])
+            obs_hist_proprio.append(obs['proprio'])
+            if i < 2:
+                for _ in range(self.frameskip):
+                    act = pilot.get_action(self.ego)
+                    self.env.step({self.agent_id: act})
+        
+        t0_pose = np.array([self.ego.position[0], self.ego.position[1], self.ego.heading_theta])
+        obs_init = {"visual": np.stack(obs_hist_visual), "proprio": np.stack(obs_hist_proprio)}
 
-        pilot, start_offset = self._setup_scene(seed)
-
-        # 跑到起点
-        for _ in range(start_offset):
-            act = pilot.get_action(self.ego)
-            self.env.step({self.agent_id: act})
-            self.current_action = act
-        obs_init = self._get_dino_obs()
-
-        # 跑到终点
-        for _ in range(self.steps_to_goal):
-            act = pilot.get_action(self.ego)
-            self.env.step({self.agent_id: act})
-            self.current_action = act
-        obs_goal = self._get_dino_obs()
-
-        # 复位回起点用于 Planning
-        pilot, _ = self._setup_scene(seed)
-        for _ in range(start_offset):
-            act = pilot.get_action(self.ego)
-            self.env.step({self.agent_id: act})
-            self.current_action = act
-
-        if isinstance(obs_init, dict):
-            obs_init["debug_info"] = np.array([start_offset, seed])
-
-        return obs_init, obs_goal
+        setup_pose = pilot.setup_pose 
+        final_pose = np.array([target_slot["pos"][0], target_slot["pos"][1], target_slot["heading"]])
+        obs_subgoal = self.get_obs_at_pose(setup_pose)
+        obs_goal = self.get_obs_at_pose(final_pose)
+        
+        return (obs_init, obs_subgoal, obs_goal), (t0_pose, setup_pose, final_pose)
 
     def rollout(self, seed, init_state, actions):
-        start_seed_limit = self.env.config.get("start_seed", 0)
-        if seed is None:
-            seed = self.current_seed if self.current_seed is not None else start_seed_limit
-        if seed < start_seed_limit:
-            seed += start_seed_limit
+        """
+        🚀 修复：执行物理 rollout 之前，必须先恢复周车和坐标。
+        """
+        pilot, _ = self._setup_scene(seed) 
+        self.ego.set_position(init_state[:2])
+        self.ego.set_heading_theta(init_state[2])
+        self.ego.set_velocity([0, 0])
 
-        pilot, start_offset = self._setup_scene(seed)
-        for _ in range(start_offset):
-            act = pilot.get_action(self.ego)
-            self.env.step({self.agent_id: act})
-            self.current_action = act
+        obs_visuals, obs_proprios, obs_poses = [], [], []
+        start_obs = self._get_dino_obs()
+        obs_visuals.append(start_obs['visual'])
+        obs_proprios.append(start_obs['proprio'])
+        obs_poses.append(init_state)
 
-        obs_visuals = []
-        obs_proprios = []
-
-        obs_start = self._get_dino_obs()
-        obs_visuals.append(obs_start['visual'])
-        obs_proprios.append(obs_start['proprio'])
-
-        if isinstance(actions, torch.Tensor):
-            actions = actions.cpu().numpy()
-
+        if isinstance(actions, torch.Tensor): actions = actions.cpu().numpy()
         for act in actions:
-            obs, reward, done, info = self.step(act)
+            obs, _, _, _ = self.step(act)
             obs_visuals.append(obs['visual'])
             obs_proprios.append(obs['proprio'])
+            obs_poses.append(np.array([self.ego.position[0], self.ego.position[1], self.ego.heading_theta]))
 
-        visual_stack = np.stack(obs_visuals)
-        proprio_stack = np.stack(obs_proprios)
-
-        return {"visual": visual_stack, "proprio": proprio_stack}, proprio_stack
+        return {"visual": np.stack(obs_visuals), "proprio": np.stack(obs_proprios)}, np.stack(obs_poses)
 
     def eval_state(self, state, goal):
-        diff = state - goal
-        dist = np.linalg.norm(diff)
-        
-        # ⚠️ 看这里！因为仅靠速度和转向算不出真实的 XY 物理距离，
-        # 所以我让你暂时写死了 False。
-        is_success = False 
-        
+        dist = np.linalg.norm(state[:2] - goal[:2])
+        is_success = dist < 1.0 
         return {"success": is_success, "distance": dist}
 
-    def step(self, action):
-        total_reward = 0.0
-        info = {}
-        
-        # 1. 提取安全的 2D 动作 (Evaluator 传进来的是已经是 2D 的单帧物理动作)
-        if isinstance(action, torch.Tensor):
-            action_np = action.cpu().detach().numpy().flatten()
-        else:
-            action_np = np.array(action).flatten()
-            
-        safe_act = action_np[:2] if len(action_np) >= 2 else np.array([0.0, 0.0])
-        
-        # 2. 裁剪到 MetaDrive 的物理极限 [-1, 1]
-        clipped_act = np.clip(safe_act, -1.0, 1.0)
-        self.current_action = clipped_act
+    def get_obs_at_pose(self, pose_xyh):
+        old_pos = self.ego.position
+        old_heading = self.ego.heading_theta
+        self.ego.set_position(pose_xyh[:2])
+        self.ego.set_heading_theta(pose_xyh[2])
+        obs = self._get_dino_obs()
+        self.ego.set_position(old_pos)
+        self.ego.set_heading_theta(old_heading)
+        return obs
 
-        # 👇 ====== 新增这一行打印 ====== 👇
-        # print(f"[Debug Env] 接收动作: {safe_act} -> 截断后执行: {clipped_act} | 当前车速: {self.ego.speed:.3f}")
-        # 👆 ============================ 👆
-        
-        # 3. 仅执行 1 次底层物理步！(去掉了 frameskip 循环)
+    def step(self, action):
+        if isinstance(action, torch.Tensor): action = action.cpu().detach().numpy().flatten()
+        clipped_act = np.clip(action[:2], -1.0, 1.0)
+        self.current_action = clipped_act
         try:
-            next_obs, rewards, dones, infos = self.env.step({self.agent_id: clipped_act})
-            total_reward += rewards.get(self.agent_id, 0.0)
-            done = dones.get(self.agent_id, False) or dones.get("__all__", False)
-            info = infos.get(self.agent_id, {})
-        except Exception as e:
-            done = True
-            info["error"] = str(e)
-            
-        # 4. 获取下一帧观察
-        dino_obs = self._get_dino_obs()
-        return dino_obs, total_reward, done, info
-    
+            _, r, d, i = self.env.step({self.agent_id: clipped_act})
+        except:
+            r, d, i = 0, True, {}
+        return self._get_dino_obs(), r, d, i
+
     def _get_dino_obs(self):
         try:
+            # 1. 记录真实位置、朝向和【速度】
+            real_pos = self.ego.position
+            real_heading = self.ego.heading_theta
+            real_vel = self.ego.velocity # 👈 必须记录速度！
+            
+            # 2. 瞬移走
+            self.ego.set_position([-1000, -1000])
             bev = self.env.render(
-                mode="topdown", window=False, screen_size=RENDER_RES,
-                scaling=BEV_SCALING, camera_position=MAP_CENTER, draw_history=False
-            )
-            if hasattr(bev, 'get'):
-                img_raw = bev.get()
-            elif hasattr(bev, 'cpu'):
-                img_raw = bev.cpu().numpy()
-            else:
-                img_raw = bev
-
-            # 1. 此时转成 BGR 是为了用 OpenCV 画图
+        mode="topdown", window=False, screen_size=RENDER_RES, 
+        scaling=BEV_SCALING, camera_position=MAP_CENTER,
+        draw_history=False  # <--- 必须加上这一行
+    )
+            img_raw = bev.get() if hasattr(bev, 'get') else bev
             img = cv2.cvtColor(np.array(img_raw).astype(np.uint8), cv2.COLOR_RGB2BGR)
+            
+            # 3. 还原位置、朝向和【速度】
+            self.ego.set_position(real_pos)
+            self.ego.set_heading_theta(real_heading)
+            self.ego.set_velocity(real_vel) # 👈 必须还原速度，否则物理动量消失
 
+            # 4. 手动绘图 (维持不变)
             for sv in self.static_vehicles:
                 draw_vehicle_on_img(img, sv.position, sv.heading_theta, is_ego=False)
             if self.ego:
                 draw_vehicle_on_img(img, self.ego.position, self.ego.heading_theta, is_ego=True)
-
             img = cv2.resize(img, REAL_RES, interpolation=cv2.INTER_AREA)
-
-            # 🔥🔥🔥 新增这一行：画完图后，把 BGR 翻转回模型认识的 RGB 格式！ 🔥🔥🔥
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) 
         except Exception:
             img = np.zeros((224, 224, 3), dtype=np.uint8)
-
-        # 调整维度 (H, W, C) -> (C, H, W) (如果有些预处理需要的话，保持原有逻辑)
-        if img.shape[0] == 3:
-            img = np.transpose(img, (1, 2, 0))
+    
+        proprio = np.array([self.ego.speed if self.ego else 0, self.current_action[0], 0.0], dtype=np.float32)
         
-        try:
-            # 恢复为 3 维，严格对齐模型训练时的维度
-            proprio = np.array([self.ego.speed, self.current_action[0], 0.0], dtype=np.float32)
-        except:
-            proprio = np.zeros(3, dtype=np.float32)
-
-        return {"visual": img, "proprio": proprio}
+        # 🔥 新增：把物理坐标带出去，避免调用 get_attr 报错
+        raw_pose = np.array([self.ego.position[0], self.ego.position[1], self.ego.heading_theta])
+        
+        return {"visual": img, "proprio": proprio, "raw_pose": raw_pose}
 
 # ========================================================
 # 4. 规划与核心基础组件 (沿用 plan_meta)
@@ -594,64 +577,55 @@ class PlanWorkspace:
         self.dump_targets()
 
     def prepare_targets(self):
-        states = []
-        actions = []
-        observations = []
-
         if self.goal_source == "random_state":
-            target_phys_steps = self.frameskip * self.goal_H
-            print(f"🚀 Planning Setup: ParkingPilot running {target_phys_steps} steps to generate goal.")
+            obs_results, state_results = self.env.sample_random_init_goal_states(self.eval_seed)
 
-            observations, states, actions, env_info = self.sample_traj_segment_from_dset(traj_len=2)
+            init_obs_list = [res[0] for res in obs_results]
+            sub_obs_list  = [res[1] for res in obs_results]
+            goal_obs_list = [res[2] for res in obs_results]
+            
+            # 提取物理坐标 (X, Y, H)
+            state_0_list    = [res[0] for res in state_results]
+            state_sub_list  = [res[1] for res in state_results]
+            state_goal_list = [res[2] for res in state_results]
 
-            steps_update_list = [{'steps_to_goal': target_phys_steps} for _ in range(self.n_evals)]
-            self.env.update_env(steps_update_list)
-
-            init_obs_tuple, goal_obs_tuple = self.env.sample_random_init_goal_states(self.eval_seed)
-
-            for i, obs in enumerate(init_obs_tuple):
-                if "debug_info" in obs:
-                    del obs["debug_info"]
-
-            def stack_dicts(dict_iterable):
-                dict_list = list(dict_iterable)
+            def stack_dicts(dict_list):
                 keys = dict_list[0].keys()
                 return {k: np.stack([d[k] for d in dict_list]) for k in keys}
 
-            obs_0 = stack_dicts(init_obs_tuple)
-            obs_g = stack_dicts(goal_obs_tuple)
+            self.obs_0 = stack_dicts(init_obs_list)
+            self.obs_g_sub = stack_dicts(sub_obs_list)
+            self.obs_g_final = stack_dicts(goal_obs_list)
 
-            state_0 = obs_0['proprio']
-            state_g = obs_g['proprio']
+            # 🔥 统一使用 _pose 后缀，防止混淆
+            self.state_0 = np.stack(state_0_list)
+            self.state_g_sub_pose = np.stack(state_sub_list)
+            self.state_g_final_pose = np.stack(state_goal_list)
 
-            for k in obs_0.keys():
-                obs_0[k] = np.expand_dims(obs_0[k], axis=1)
-                obs_g[k] = np.expand_dims(obs_g[k], axis=1)
+            for k in self.obs_g_sub.keys():
+                self.obs_g_sub[k] = np.expand_dims(self.obs_g_sub[k], axis=1)
+                self.obs_g_final[k] = np.expand_dims(self.obs_g_final[k], axis=1)
 
-            self.obs_0 = obs_0
-            self.obs_g = obs_g
-            self.state_0 = state_0
-            self.state_g = state_g
+            # 🔥 修正报错行：将默认目标设为最终位姿
+            self.state_g = self.state_g_final_pose 
+            self.obs_g = self.obs_g_final
             self.gt_actions = None
 
         else:
-            # 1. 获取模型训练时依赖的历史帧数 (你的配置中是 3)
-            num_hist = self.wm.num_hist
-            
-            # 2. 往前倒推，计算出包含历史背景的总序列长度
+            # Dataset 分支同样适配 3 帧历史逻辑
+            num_hist = 3
             total_len = self.frameskip * (num_hist - 1 + self.goal_H) + 1
             observations, states, actions, env_info = self.sample_traj_segment_from_dset(traj_len=total_len)
             self.env.update_env(env_info)
 
-            # 3. 确定真正的 t=0 时刻在序列中的索引
+            # 确定 t=0 (当前时刻) 在序列中的索引
             t0_idx = (num_hist - 1) * self.frameskip
 
-            # 初始物理状态 (真正的 t=0 时刻)
+            # 真车的初始物理状态是历史的最后一帧
             init_state = [x[t0_idx] for x in states]
             init_state = np.array(init_state)
             
             actions = torch.stack(actions)
-            # 4. 动作只取 t=0 之后的未来动作，给环境去 rollout
             test_actions = actions[:, t0_idx : t0_idx + self.frameskip * self.goal_H]
             if self.goal_source == "random_action":
                 test_actions = torch.randn_like(test_actions)
@@ -660,13 +634,12 @@ class PlanWorkspace:
             exec_actions = self.data_preprocessor.denormalize_actions(test_actions)
             rollout_obses, rollout_states = self.env.rollout(self.eval_seed, init_state, exec_actions.numpy())
 
-            # 5. 🔥核心修复：给模型喂入包含真实速度的 num_hist 帧历史序列！🔥
+            # 提取完美的 3 帧历史喂给模型
             obs_0_dict = {}
             for k in rollout_obses.keys():
                 batch_obs = []
                 for b in range(self.n_evals):
                     hist_frames = []
-                    # 从 dataset 中精确抽出 t0 及它之前的历史帧
                     for i in range(num_hist):
                         idx = i * self.frameskip
                         hist_frames.append(observations[b][k][idx])
@@ -674,12 +647,16 @@ class PlanWorkspace:
                 obs_0_dict[k] = np.stack(batch_obs)
                 
             self.obs_0 = obs_0_dict
-            
-            # goal 依然是 rollout 的最后一帧
             self.obs_g = {key: np.expand_dims(arr[:, -1], axis=1) for key, arr in rollout_obses.items()}
             self.state_0 = init_state
             self.state_g = rollout_states[:, -1]
             self.gt_actions = wm_actions
+            
+            # 为了让 Dataset 分支在调用 perform_planning 时不报错，把 subgoal 直接等同于 final_goal
+            self.obs_g_sub = self.obs_g
+            self.obs_g_final = self.obs_g
+            self.state_g_sub = self.state_g
+            self.state_g_final = self.state_g
 
     def sample_traj_segment_from_dset(self, traj_len):
         states = []
@@ -738,27 +715,57 @@ class PlanWorkspace:
             }, f)
         print(f"Dumped plan targets to {os.path.abspath('plan_targets.pkl')}")
 
+# 修改 plan_park_3_full.py 中的 perform_planning
     def perform_planning(self):
-        if self.debug_dset_init:
-            actions_init = self.gt_actions
-        else:
-            actions_init = None
-        actions, action_len = self.planner.plan(
-            obs_0=self.obs_0,
-            obs_g=self.obs_g,
-            actions=actions_init,
-        )
-        logs, successes, _, _ = self.evaluator.eval_actions(
-            actions.detach(), action_len, save_video=True, filename="output_final"
-        )
-        logs = {f"final_eval/{k}": v for k, v in logs.items()}
-        self.wandb_run.log(logs)
-        logs_entry = {key: (value.item() if isinstance(value, (np.float32, np.int32, np.int64)) else value) for
-                      key, value in logs.items()}
-        with open(self.log_filename, "a") as file:
-            file.write(json.dumps(logs_entry) + "\n")
-        return logs
+        # 1. 获取初始状态 (Numpy 字典)
+        cur_obs_0, _ = self.evaluator.get_init_cond()
 
+        # 2. 定义分层阶段目标
+        stages = [
+            {
+                "name": "阶段 1: 前进至面包屑 (刹停准备)", 
+                "goal_obs": self.obs_g_sub,       # 👈 锁定面包屑图像
+                "goal_pose": self.state_g_sub_pose, 
+                "dist_tol": 1.5                   # 接近 1.5 米后进入倒车阶段
+            },
+            {
+                "name": "阶段 2: 倒车入库", 
+                "goal_obs": self.obs_g_final,     # 👈 锁定停车位图像
+                "goal_pose": self.state_g_final_pose, 
+                "dist_tol": 0.35
+            }
+        ]
+
+        for st in stages:
+            print(f"\n🚀 开始 {st['name']}")
+            target_obs_g = st['goal_obs']
+            cur_pos = self.state_0[0, :2] 
+
+            for mpc_step in range(60): 
+                dist = np.linalg.norm(cur_pos - st['goal_pose'][0, :2])
+                if mpc_step % 10 == 0:
+                    print(f"  [MPC] 距离目标: {dist:.2f}m")
+
+                if dist < st['dist_tol']:
+                    print(f"✅ 到达阶段目标")
+                    break
+
+                # 规划并执行
+                actions, _ = self.planner.plan(obs_0=cur_obs_0, obs_g=target_obs_g)
+                exec_act = self.data_preprocessor.denormalize_actions(actions[:, 0, :]).cpu().numpy()
+                
+                # 调用上面修复过的 step (带 frameskip)
+                next_obs_batch, _, _, _ = self.env.step(exec_act)
+                
+                # 更新坐标和历史画面，确保 WM 知道车在动
+                cur_pos = next_obs_batch['raw_pose'][0, :2] 
+                for k in ['visual', 'proprio']:
+                    new_frame = np.expand_dims(next_obs_batch[k], axis=1)
+                    cur_obs_0[k] = np.concatenate([cur_obs_0[k][:, 1:], new_frame], axis=1)
+
+        print("\n🏆 全程规划完成")
+        return {}
+        
 def planning_main(cfg_dict):
     output_dir = cfg_dict["saved_folder"]
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -802,6 +809,7 @@ def planning_main(cfg_dict):
     norm_max = (torch.tensor([1.0] * 10, device=device) - act_mean_10d) / act_std_10d
 
     # 2. 编写一个极其轻量级的拦截器，伪装成原本的 model
+    # 2. 编写一个极其轻量级的拦截器，伪装成原本的 model
     class ClampedWM:
         def __init__(self, original_wm, n_min, n_max):
             self.original_wm = original_wm
@@ -809,12 +817,31 @@ def planning_main(cfg_dict):
             self.n_max = n_max
             
         def rollout(self, obs_0, act, **kwargs):
-            # 核心魔法：在模型开始“想象”前，强制把 CEM 瞎猜的动作掐死在物理极限内！
+            # 将 Planner 的动作限制在物理范围内
             clipped_act = torch.max(torch.min(act, self.n_max), self.n_min)
-            return self.original_wm.rollout(obs_0, clipped_act, **kwargs)
+            num_hist = obs_0['visual'].shape[1]
+            
+            B, _, D = clipped_act.shape
+            
+            # 🔥 核心修复 1：历史只需补 (num_hist - 1) 个假动作
+            # 这样 clipped_act 的第 1 个动作，就会刚好落入 act_0 的位置！消灭延迟！
+            dummy_hist_act = torch.zeros(B, num_hist - 1, D, device=clipped_act.device)
+            full_act = torch.cat([dummy_hist_act, clipped_act], dim=1)
+            
+            # 丢给底层的世界模型去想象
+            z_obses, z = self.original_wm.rollout(obs_0, full_act, **kwargs)
+            
+            sliced_z_obses = {}
+            for k, v in z_obses.items():
+                # 🔥 核心修复 2：严格切片，死死卡住目标长度，彻底消灭 6 and 7 的报错！
+                # 目标长度 = 初始 1 帧 + Planner 预测的未来 N 帧
+                target_len = clipped_act.shape[1] + 1
+                sliced_z_obses[k] = v[:, num_hist - 1 : num_hist - 1 + target_len]
+                
+            return sliced_z_obses, z
             
         def __getattr__(self, name):
-            # 其他所有方法（如 encode_obs, decoder 等）原封不动转交还原模型
+            # 其他所有方法原封不动转交还原模型
             return getattr(self.original_wm, name)
 
     # 3. 给原模型穿上紧身衣

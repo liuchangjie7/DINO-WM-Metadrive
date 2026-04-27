@@ -56,9 +56,6 @@ class MPCPlanner(BasePlanner):
         self.action_len = None  # keep track of the step each traj reaches success
         self.iter = 0
         self.planned_actions = []
-        self.final_obs_0 = None   # last real obs after plan() completes
-        self.final_state_0 = None  # last real state after plan() completes
-        self.base_history = None  # prepended to history_actions for phase continuity
 
     def _apply_success_mask(self, actions):
         device = actions.device
@@ -84,20 +81,15 @@ class MPCPlanner(BasePlanner):
         init_obs_0, init_state_0 = self.evaluator.get_init_cond()
 
         cur_obs_0 = obs_0
-        e_final_state = init_state_0  # default if loop never runs
         memo_actions = None
-
         while not np.all(self.is_success) and self.iter < self.max_iter:
-            self.sub_planner.logging_prefix = f"{self.logging_prefix}_plan_{self.iter}"
+            self.sub_planner.logging_prefix = f"plan_{self.iter}"
 
-            # 1. 告诉 Evaluator 当前已经走过的历史动作是什么
-            current_planned = torch.cat(self.planned_actions, dim=1) if len(self.planned_actions) > 0 else None
-            if self.base_history is not None and current_planned is not None:
-                self.evaluator.history_actions = torch.cat([self.base_history, current_planned], dim=1)
-            elif self.base_history is not None:
-                self.evaluator.history_actions = self.base_history
+            # 👇 1. 新增：告诉 Evaluator 当前已经走过的历史动作是什么
+            if len(self.planned_actions) > 0:
+                self.evaluator.history_actions = torch.cat(self.planned_actions, dim=1)
             else:
-                self.evaluator.history_actions = current_planned
+                self.evaluator.history_actions = None
                 
             actions, _ = self.sub_planner.plan(
                 obs_0=cur_obs_0,
@@ -112,23 +104,20 @@ class MPCPlanner(BasePlanner):
 
             print(f"MPC iter {self.iter} Eval ------- ")
             action_so_far = torch.cat(self.planned_actions, dim=1)
-
-            # For final eval, use base_history (phase 1 actions) if present, but not current planned
-            # (action_so_far already contains all current phase actions)
-            self.evaluator.history_actions = self.base_history
+            
+            # 👇 2. 新增：在输出长视频前，清空历史，防止动作被重复拼接两次
+            self.evaluator.history_actions = None 
             
             self.evaluator.assign_init_cond(
                 obs_0=init_obs_0,
                 state_0=init_state_0,
             )
-            print(f"[MPC DEBUG] Starting Phase-2 (or continued) eval: filename={self.logging_prefix}_plan{self.iter}, save_video=True")
             logs, successes, e_obses, e_states = self.evaluator.eval_actions(
                 action_so_far,
                 self.action_len,
-                filename=f"{self.logging_prefix}_plan{self.iter}",
+                filename=f"plan{self.iter}",
                 save_video=True,
             )
-            print(f"[MPC DEBUG] Eval finished for {self.logging_prefix}_plan{self.iter}")
             new_successes = successes & ~self.is_success  # Identify new successes
             self.is_success = (
                 self.is_success | successes
@@ -144,15 +133,9 @@ class MPCPlanner(BasePlanner):
             self.dump_logs(logs)
 
             # update evaluator's init conditions with new env feedback
-            # Use action_len to grab the obs/state at the moment each traj
-            # reached success, so finished episodes do not drift past the goal.
-            e_final_obs = self.evaluator._get_trajdict_last(
-                e_obses, self.action_len * self.evaluator.frameskip + 1
-            )
-            e_final_state = self.evaluator._get_traj_last(
-                e_states, self.action_len * self.evaluator.frameskip + 1
-            )[:, 0]
+            e_final_obs = slice_trajdict_with_t(e_obses, start_idx=-1)
             cur_obs_0 = e_final_obs
+            e_final_state = e_states[:, -1]
             self.evaluator.assign_init_cond(
                 obs_0=e_final_obs,
                 state_0=e_final_state,
@@ -161,20 +144,9 @@ class MPCPlanner(BasePlanner):
             self.sub_planner.logging_prefix = f"plan_{self.iter}"
 
         planned_actions = torch.cat(self.planned_actions, dim=1)
-        self.final_obs_0 = cur_obs_0
-        self.final_state_0 = e_final_state
         self.evaluator.assign_init_cond(
             obs_0=init_obs_0,
             state_0=init_state_0,
         )
 
         return planned_actions, self.action_len
-
-    def reset(self):
-        self.is_success = None
-        self.action_len = None
-        self.iter = 0
-        self.planned_actions = []
-        self.final_obs_0 = None
-        self.final_state_0 = None
-        self.base_history = None

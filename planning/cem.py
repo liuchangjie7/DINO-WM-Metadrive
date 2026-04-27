@@ -121,9 +121,11 @@ class CEMPlanner(BasePlanner):
                 {f"{self.logging_prefix}/loss": np.mean(losses), "step": i + 1}
             )
             if self.evaluator is not None and i % self.eval_every == 0:
+                print(f"[CEM DEBUG] Calling eval_actions for {self.logging_prefix}_output_{i+1}, save_video=False")
                 logs, successes, _, _ = self.evaluator.eval_actions(
                     mu, filename=f"{self.logging_prefix}_output_{i+1}"
                 )
+                print(f"[CEM DEBUG] eval_actions returned for {self.logging_prefix}_output_{i+1}")
                 logs = {f"{self.logging_prefix}/{k}": v for k, v in logs.items()}
                 logs.update({"step": i + 1})
                 self.wandb_run.log(logs)

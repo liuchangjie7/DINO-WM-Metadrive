@@ -13,7 +13,7 @@ defaults:
 
 # Checkpoints 和日志保存路径
 # 您可以修改为你喜欢的绝对路径
-ckpt_base_path: "/root/autodl-tmp/checkpoints/checkpoints_parking/outputs/metadrive_park_3"
+ckpt_base_path: "/root/autodl-tmp/checkpoints/checkpoints_parking/outputs/metadrive_park_2"
 
 hydra:
   run:
@@ -25,14 +25,14 @@ hydra:
 
 training:
   seed: 42
-  epochs: 100            # 泊车数据较少，多跑些 Epoch
+  epochs: 200            # 泊车数据较少，多跑些 Epoch
 
   # 显存优化建议：
   # 16GB 显存，224x224 图片，Batch Size 16 比较稳妥
   # 如果显存不够，改小到 8；如果还有空余，尝试 24 或 32
-  batch_size: 64
+  batch_size: 32
 
-  save_every_x_epoch: 20
+  save_every_x_epoch: 10
 
   # 训练过程中可视化重建效果的频率 (Step)
   reconstruct_every_x_batch: 2000
@@ -41,7 +41,7 @@ training:
   # 学习率配置 (参考 PushT 任务)
   encoder_lr: 1e-6       # DINO Encoder 几乎不微调或极小 LR
   decoder_lr: 3e-4       # 解码器学习率
-  predictor_lr: 1.5e-4     # 核心预测器学习率 (Transformer)
+  predictor_lr: 1e-4     # 核心预测器学习率 (Transformer)
   action_encoder_lr: 1e-4
 
 # === 数据相关 ===

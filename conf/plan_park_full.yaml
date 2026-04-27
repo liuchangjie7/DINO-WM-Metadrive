@@ -26,8 +26,8 @@ ckpt_base_path: /root/DINO-WM-Metadrive/checkpoints # put absolute path here. Ch
 model_name: metadrive_park_3
 model_epoch: latest
 
-seed: 55
-n_evals: 1
+seed: 75
+n_evals: 2
 goal_source: 'random_state'
 goal_H: 5
 n_plot_samples: 5
@@ -43,10 +43,10 @@ objective:
 # planner:
 #   _target_: planning.mpc_park.MPCPlanner
 #   max_iter: null 
-#   n_taken_actions: 5
+#   n_taken_actions: 1
 #   sub_planner:
 #     target: planning.cem.CEMPlanner
-#     horizon: 5
+#     horizon: 8
 #     topk: 30
 #     num_samples: 400
 #     var_scale: 1
@@ -55,14 +55,14 @@ objective:
 #   name: mpc_cem
 
 planner:
-  _target_: planning.mpc_park.MPCPlanner
+  _target_: planning.mpc_park_full.MPCPlanner
   max_iter: null 
   n_taken_actions: 5
   sub_planner:
     target: planning.mppi.MPPIPlanner
     horizon: 5
     num_samples: 400
-    opt_steps: 20
+    opt_steps: 5
     eval_every: 1
     # 👇 新版参数 👇
     temperature: 0.1         

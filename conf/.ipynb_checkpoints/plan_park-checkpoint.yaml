@@ -23,14 +23,14 @@ hydra:
 
 # model to load for planning
 ckpt_base_path: /root/DINO-WM-Metadrive/checkpoints # put absolute path here. Checkpoints will be loaded from ${ckpt_base_path}/outputs
-model_name: metadrive_park_3
+model_name: metadrive_park_2
 model_epoch: latest
 
-seed: 55
+seed: 85
 n_evals: 1
 goal_source: 'random_state'
-goal_H: 5
-n_plot_samples: 5
+goal_H: 10
+n_plot_samples: 10
 
 debug_dset_init: False
 
@@ -40,32 +40,16 @@ objective:
   base: 2 
   mode: last
 
-# planner:
-#   _target_: planning.mpc_park.MPCPlanner
-#   max_iter: null 
-#   n_taken_actions: 5
-#   sub_planner:
-#     target: planning.cem.CEMPlanner
-#     horizon: 5
-#     topk: 30
-#     num_samples: 400
-#     var_scale: 1
-#     opt_steps: 20
-#     eval_every: 1
-#   name: mpc_cem
-
 planner:
   _target_: planning.mpc_park.MPCPlanner
   max_iter: null 
-  n_taken_actions: 5
+  n_taken_actions: 10
   sub_planner:
-    target: planning.mppi.MPPIPlanner
-    horizon: 5
-    num_samples: 400
-    opt_steps: 20
+    target: planning.cem.CEMPlanner
+    horizon: 10
+    topk: 30
+    num_samples: 300
+    var_scale: 1
+    opt_steps: 10
     eval_every: 1
-    # 👇 新版参数 👇
-    temperature: 0.1         
-    noise_sigma: 0.5         
-    num_control_points: 4  # 👈 核心降维参数！无论 horizon 是 10 还是 20，它永远只在 4 个点的空间里搜索
-  name: mpc_mppi             # 👈 改个帅气的名字
+  name: mpc_cem

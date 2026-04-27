@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import os
 
 torch.hub._validate_not_a_forked_repo=lambda a,b,c: True
 
@@ -7,9 +8,17 @@ class DinoV2Encoder(nn.Module):
     def __init__(self, name, feature_key):
         super().__init__()
         self.name = name
-        self.base_model = torch.hub.load("facebookresearch/dinov2", name)
-        # repo_path = "/home/lcj/dino_wm/dinov2_repo/dinov2"
-        # self.base_model = torch.hub.load(repo_path, name, source='local')
+        # self.base_model = torch.hub.load("facebookresearch/dinov2", name)
+        # 指向刚才 git clone 的本地路径
+        repo_path = "/root/autodl-tmp/dinov2" 
+        
+        if os.path.exists(repo_path):
+            # source='local' 会让 torch 去本地 repo_path 找代码
+            # 它会自动去 /root/.cache/torch/hub/checkpoints/ 找对应的 .pth 权重
+            self.base_model = torch.hub.load(repo_path, name, source='local')
+            print(f"Successfully loaded {name} from local.")
+        else:
+            raise FileNotFoundError(f"找不到本地仓库路径: {repo_path}，请检查是否 clone 成功")
         self.feature_key = feature_key
         self.emb_dim = self.base_model.num_features
         if feature_key == "x_norm_patchtokens":

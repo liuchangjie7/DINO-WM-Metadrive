@@ -45,7 +45,8 @@ class Preprocessor:
         return (state - self.state_mean) / self.state_std
 
     def preprocess_obs_visual(self, obs_visual):
-        return rearrange(obs_visual, "b t h w c -> b t c h w") / 255.0
+        x = rearrange(obs_visual, "b t h w c -> b t c h w") / 255.0
+        return x * 2.0 - 1.0  # align with training normalization [-1, 1]
 
     def transform_obs_visual(self, obs_visual):
         transformed_obs_visual = torch.tensor(obs_visual)
@@ -60,5 +61,5 @@ class Preprocessor:
         '''
         transformed_obs = {}
         transformed_obs['visual'] = self.transform_obs_visual(obs['visual'])
-        transformed_obs['proprio'] = self.normalize_proprios(torch.tensor(obs['proprio']))
+        transformed_obs['proprio'] = torch.tensor(obs['proprio']).float()  # raw values, align with training
         return transformed_obs

@@ -898,8 +898,11 @@ class BaseVectorEnv(object):
 
     def sample_random_init_goal_states(self, seed):
         self._assert_is_not_closed()
-        init_state, goal_state = zip(*(self.workers[i].sample_random_init_goal_states(seed[i]) for i in range(self.env_num)))
-        return np.stack(init_state), np.stack(goal_state)
+        # init_state, goal_state = zip(*(self.workers[i].sample_random_init_goal_states(seed[i]) for i in range(self.env_num)))
+        # return np.stack(init_state), np.stack(goal_state)
+        results = [self.workers[i].sample_random_init_goal_states(seed[i]) for i in range(self.env_num)]
+        init_state, sub_state, goal_state = zip(*results)
+        return np.stack(init_state), np.stack(sub_state), np.stack(goal_state)
     
     def eval_state(self, goal_state, cur_state):
         self._assert_is_not_closed()

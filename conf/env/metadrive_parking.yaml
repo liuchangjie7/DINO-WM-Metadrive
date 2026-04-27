@@ -3,7 +3,7 @@ dataset:
   # 指向我们在 data_loader.py 里写的函数
   _target_: data_loader_park.build_parking_dataset
   # 【注意】修改为你的绝对路径
-  data_path: "/root/DINO-WM-Metadrive/data/parking_dataset_20260311_210847"
+  data_path: "/root/DINO-WM-Metadrive/data/parking_dataset_20260402_154508"
 
 # DataLoader 的工作线程数，本地跑建议设小一点，防止卡死
 num_workers: 12

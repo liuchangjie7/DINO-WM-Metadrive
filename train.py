@@ -128,6 +128,7 @@ class Trainer:
                 batch_size=self.cfg.gpu_batch_size,
                 shuffle=False, # already shuffled in TrajSlicerDataset
                 num_workers=self.cfg.env.num_workers,
+                pin_memory=True,
                 collate_fn=None,
             )
             for x in ["train", "valid"]
@@ -374,6 +375,9 @@ class Trainer:
             self.accelerator.wait_for_everyone()
             self.train()
             self.accelerator.wait_for_everyone()
+            # 添加这两行：
+            torch.cuda.empty_cache() 
+            import gc; gc.collect()
             self.val()
             self.logs_flash(step=self.epoch)
             if self.epoch % self.cfg.training.save_every_x_epoch == 0:
@@ -473,7 +477,7 @@ class Trainer:
             loss_components = {
                 key: value.mean().item() for key, value in loss_components.items()
             }
-            if self.cfg.has_decoder and plot:
+            if self.cfg.has_decoder and plot and (self.epoch % 2 == 0):
                 # only eval images when plotting due to speed
                 if self.cfg.has_predictor:
                     z_obs_out, z_act_out = self.model.separate_emb(z_out)
@@ -569,7 +573,7 @@ class Trainer:
                 key: value.mean().item() for key, value in loss_components.items()
             }
 
-            if self.cfg.has_decoder and plot:
+            if self.cfg.has_decoder and plot and (self.epoch % 2 == 0):
                 # only eval images when plotting due to speed
                 if self.cfg.has_predictor:
                     z_obs_out, z_act_out = self.model.separate_emb(z_out)
@@ -708,7 +712,7 @@ class Trainer:
                             div_loss[k]
                         ]
 
-                if self.cfg.has_decoder:
+                if self.cfg.has_decoder and (self.epoch % 2 == 0):
                     visuals = self.model.decode_obs(z_obses)[0]["visual"]
                     imgs = torch.cat([obs["visual"], visuals[0].cpu()], dim=0)
                     self.plot_imgs(
